@@ -133,6 +133,7 @@ class ViT(nn.Module):
             - chahnnels (int) : 入力のチャネル数（RGBの画像なら3）
             - mlp_dim (int) : MLP の隠れ層のノード数
         """
+        
         super().__init__()
         
         # Params
