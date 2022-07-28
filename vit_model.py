@@ -1,6 +1,6 @@
 """
     - 解説記事 :
-        - 
+        - TODO
 
     - 参考 :
         - [1] https://arxiv.org/abs/2010.11929
@@ -16,26 +16,45 @@ from einops.layers.torch import Rearrange
 
 class Patching(nn.Module):
     def __init__(self, patch_size):
+        """ [input]
+            - patch_size (int) : パッチの縦の長さ（=横の長さ）
+        """
         super().__init__()
         self.net = Rearrange("b c (h ph) (w pw) -> b (h w) (ph pw c)", ph = patch_size, pw = patch_size)
     
     def forward(self, x):
+        """ [input]
+            - x (torch.Tensor) : 画像データ
+                - x.shape = torch.Size([batch_size, channels, image_height, image_width])
+        """
         x = self.net(x)
         return x
 
 
 class LinearProjection(nn.Module):
     def __init__(self, patch_dim, dim):
+        """ [input]
+            - patch_dim (int) : 一枚あたりのパッチのベクトルの長さ（= channels * (patch_size ** 2)）
+            - dim (int) : パッチのベクトルが変換されたベクトルの長さ 
+        """
         super().__init__()
         self.net = nn.Linear(patch_dim, dim)
 
     def forward(self, x):
+        """ [input]
+            - x (torch.Tensor) 
+                - x.shape = torch.Size([batch_size, n_patches, patch_dim])
+        """
         x = self.net(x)
         return x
 
 
 class Embedding(nn.Module):
     def __init__(self, dim, n_patches):
+        """ [input]
+            - dim (int) : パッチのベクトルが変換されたベクトルの長さ
+            - n_patches (int) : パッチの枚数
+        """
         super().__init__()
         # class token
         self.cls_token = nn.Parameter(torch.randn(1, 1, dim))
@@ -44,21 +63,52 @@ class Embedding(nn.Module):
         self.pos_embedding = nn.Parameter(torch.randn(1, n_patches + 1, dim))
     
     def forward(self, x):
+        """[input]
+            - x (torch.Tensor)
+                - x.shape = torch.Size([batch_size, n_patches, dim])
+        """
         # バッチサイズを抽出
         batch_size, _, __ = x.shape
 
-        # 
+        # [CLS] トークン付加
+        # x.shape : [batch_size, n_patches, patch_dim] -> [batch_size, n_patches + 1, patch_dim]
         cls_tokens = repeat(self.cls_token, "1 1 d -> b 1 d", b = batch_size)
         x = torch.concat([cls_tokens, x], dim = 1)
 
-        #
+        # 位置エンコーディング加算
         x += self.pos_embedding
 
         return x
 
 
+class MLP(nn.Module):
+    def __init__(self, dim, hidden_dim):
+        """ [input]
+            - dim (int) : パッチのベクトルが変換されたベクトルの長さ
+            - hidden_dim (int) : 隠れ層のノード数
+        """
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(dim, hidden_dim),
+            nn.GELU(),
+            nn.Linear(hidden_dim, dim)
+        )
+
+    def forward(self, x):
+        """[input]
+            - x (torch.Tensor)
+                - x.shape = torch.Size([batch_size, n_patches + 1, dim])
+        """
+        x = self.net(x)
+        return x
+
+
 class MultiHeadAttention(nn.Module):
     def __init__(self, dim, n_heads):
+        """ [input]
+            - dim (int) : パッチのベクトルが変換されたベクトルの長さ
+            - n_heads (int) : heads の数
+        """
         super().__init__()
         self.n_heads = n_heads
         self.dim_heads = dim // n_heads
@@ -74,6 +124,10 @@ class MultiHeadAttention(nn.Module):
         self.concat = Rearrange("b h n d -> b n (h d)", h = self.n_heads)
 
     def forward(self, x):
+        """[input]
+            - x (torch.Tensor)
+                - x.shape = torch.Size([batch_size, n_patches + 1, dim])
+        """
         q = self.W_q(x)
         k = self.W_k(x)
         v = self.W_v(x)
@@ -93,20 +147,6 @@ class MultiHeadAttention(nn.Module):
         return output
 
 
-class MLP(nn.Module):
-    def __init__(self, dim, hidden_dim):
-        super().__init__()
-        self.net = nn.Sequential(
-            nn.Linear(dim, hidden_dim),
-            nn.GELU(),
-            nn.Linear(hidden_dim, dim)
-        )
-
-    def forward(self, x):
-        x = self.net(x)
-        return x
-
-
 class MLPHead(nn.Module):
     def __init__(self, dim, out_dim):
         super().__init__()
@@ -122,18 +162,17 @@ class MLPHead(nn.Module):
 
 class ViT(nn.Module):
     def __init__(self, image_size, patch_size, n_classes, dim, depth, n_heads, channels = 3, mlp_dim = 256):
-
         """ [input]
             - image_size (int) : 画像の縦の長さ（= 横の長さ）
             - patch_size (int) : パッチの縦の長さ（= 横の長さ）
             - n_classes (int) : 分類するクラスの数
-            - dim (int) : 各パッチを変換したベクトルの次元（参考[1] (1)式 D）
+            - dim (int) : 各パッチのベクトルが変換されたベクトルの長さ（参考[1] (1)式 D）
             - depth (int) : Transformer Encoder の層の深さ（参考[1] (2)式 L）
             - n_heads (int) : Multi-Head Attention の head の数
             - chahnnels (int) : 入力のチャネル数（RGBの画像なら3）
             - mlp_dim (int) : MLP の隠れ層のノード数
         """
-        
+
         super().__init__()
         
         # Params
@@ -152,25 +191,32 @@ class ViT(nn.Module):
 
 
     def forward(self, img):
+        """ [input]
+            - img (torch.Tensor) : 画像データ
+                - img.shape = torch.Size([batch_size, channels, image_height, image_width])
+        """
 
         x = img
 
         # 1. パッチに分割
-        # x.shape : [batch_size, channels, image_size, image_size] -> [batch_size, n_patches, channels * (patch_size ** 2)]
+        # x.shape : [batch_size, channels, image_height, image_width] -> [batch_size, n_patches, channels * (patch_size ** 2)]
         x = self.patching(x)
 
         # 2. 各パッチをベクトルに変換
-        # x.shape : [batch_size, n_patches, channels * (patch_size ** 2)] -> [batch_size, n_patches, dim] -> [batch_size, n_patches + 1, dim]
+        # x.shape : [batch_size, n_patches, channels * (patch_size ** 2)] -> [batch_size, n_patches, dim]
         x = self.linear_projection_of_flattened_patches(x)
+
+        # 3. [CLS] トークン付加 + 位置エンコーディング 
+        # x.shape : [batch_size, n_patches, dim] -> [batch_size, n_patches + 1, dim]
         x = self.embedding(x)
 
-        # 3. Transformer Encoder
+        # 4. Transformer Encoder
         # x.shape : No Change
         for _ in range(self.depth):
             x = self.multi_head_attention(self.norm(x)) + x
             x = self.mlp(self.norm(x)) + x
 
-        # 4. 出力の0番目のベクトルを MLP Head で処理
+        # 5. 出力の0番目のベクトルを MLP Head で処理
         # x.shape : [batch_size, n_patches + 1, dim] -> [batch_size, dim] -> [batch_size, n_classes]
         x = x[:, 0]
         x = self.mlp_head(x)
