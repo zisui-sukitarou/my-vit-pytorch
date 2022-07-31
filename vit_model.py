@@ -56,7 +56,7 @@ class Embedding(nn.Module):
             - n_patches (int) : パッチの枚数
         """
         super().__init__()
-        # class token
+        # [class] token
         self.cls_token = nn.Parameter(torch.randn(1, 1, dim))
 
         # position embedding
@@ -70,12 +70,12 @@ class Embedding(nn.Module):
         # バッチサイズを抽出
         batch_size, _, __ = x.shape
 
-        # [CLS] トークン付加
+        # [class] トークン付加
         # x.shape : [batch_size, n_patches, patch_dim] -> [batch_size, n_patches + 1, patch_dim]
         cls_tokens = repeat(self.cls_token, "1 1 d -> b 1 d", b = batch_size)
         x = torch.concat([cls_tokens, x], dim = 1)
 
-        # 位置エンコーディング加算
+        # 位置エンコーディング
         x += self.pos_embedding
 
         return x
@@ -136,15 +136,44 @@ class MultiHeadAttention(nn.Module):
         k = self.split_into_heads(k)
         v = self.split_into_heads(v)
 
-        # logit = Q * K^{T} / \sqrt{D}
+        # Logit[i] = Q[i] * tK[i] / sqrt(D) (i = 1, ... , n_heads)
+        # AttentionWeight[i] = Softmax(Logit[i]) (i = 1, ... , n_heads)
         logit = torch.matmul(q, k.transpose(-1, -2)) * (self.dim_heads ** -0.5)
         attention_weight = self.softmax(logit)
 
-        # head_{i} = attention_weight * v
-        # output = concat[head_{1}, ... , head_{n}]
-        output = torch.matmul(logit, v)
+        # Head[i] = AttentionWeight[i] * V[i] (i = 1, ... , n_heads)
+        # Output = concat[Head[1], ... , Head[n_heads]]
+        output = torch.matmul(attention_weight, v)
         output = self.concat(output)
         return output
+
+
+class TransformerEncoder(nn.Module):
+    def __init__(self, dim, n_heads, mlp_dim, depth):
+        """ [input]
+            - dim (int) : 各パッチのベクトルが変換されたベクトルの長さ（参考[1] (1)式 D）
+            - depth (int) : Transformer Encoder の層の深さ（参考[1] (2)式 L）
+            - n_heads (int) : Multi-Head Attention の head の数
+            - mlp_dim (int) : MLP の隠れ層のノード数
+        """
+        super().__init__()
+
+        # Layers
+        self.norm = nn.LayerNorm(dim)
+        self.multi_head_attention = MultiHeadAttention(dim = dim, n_heads = n_heads)
+        self.mlp = MLP(dim = dim, hidden_dim = mlp_dim)
+        self.depth = depth
+
+    def forward(self, x):
+        """[input]
+            - x (torch.Tensor)
+                - x.shape = torch.Size([batch_size, n_patches + 1, dim])
+        """
+        for _ in range(self.depth):
+            x = self.multi_head_attention(self.norm(x)) + x
+            x = self.mlp(self.norm(x)) + x
+
+        return x
 
 
 class MLPHead(nn.Module):
@@ -184,9 +213,7 @@ class ViT(nn.Module):
         self.patching = Patching(patch_size = patch_size)
         self.linear_projection_of_flattened_patches = LinearProjection(patch_dim = patch_dim, dim = dim)
         self.embedding = Embedding(dim = dim, n_patches = n_patches)
-        self.norm = nn.LayerNorm(dim)
-        self.multi_head_attention = MultiHeadAttention(dim = dim, n_heads = n_heads)
-        self.mlp = MLP(dim = dim, hidden_dim = mlp_dim)
+        self.transformer_encoder = TransformerEncoder(dim = dim, n_heads = n_heads, mlp_dim = mlp_dim, depth = depth)
         self.mlp_head = MLPHead(dim = dim, out_dim = n_classes)
 
 
@@ -206,15 +233,13 @@ class ViT(nn.Module):
         # x.shape : [batch_size, n_patches, channels * (patch_size ** 2)] -> [batch_size, n_patches, dim]
         x = self.linear_projection_of_flattened_patches(x)
 
-        # 3. [CLS] トークン付加 + 位置エンコーディング 
+        # 3. [class] トークン付加 + 位置エンコーディング 
         # x.shape : [batch_size, n_patches, dim] -> [batch_size, n_patches + 1, dim]
         x = self.embedding(x)
 
         # 4. Transformer Encoder
         # x.shape : No Change
-        for _ in range(self.depth):
-            x = self.multi_head_attention(self.norm(x)) + x
-            x = self.mlp(self.norm(x)) + x
+        x = self.transformer_encoder(x)
 
         # 5. 出力の0番目のベクトルを MLP Head で処理
         # x.shape : [batch_size, n_patches + 1, dim] -> [batch_size, dim] -> [batch_size, n_classes]
