@@ -1,6 +1,6 @@
 """
     - 解説記事 :
-        - TODO
+        - https://qiita.com/zisui-sukitarou/items/d990a9630ff2c7f4abf2
 
     - 参考 :
         - [1] https://arxiv.org/abs/2010.11929
